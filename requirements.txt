@@ -18,3 +18,6 @@ py-clob-client==0.28.0
 
 # Machine Learning
 scikit-learn==1.4.0
+
+# LLM
+anthropic>=0.40.0

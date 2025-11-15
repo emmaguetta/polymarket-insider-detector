@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     win_rate_threshold: float = 0.75
     min_trades_for_analysis: int = 5
 
+    # LLM Configuration
+    anthropic_model: str = "claude-haiku-4-5"
+    max_tokens: int = 4096
+    temperature: float = 1.0
+
     # Logging
     log_level: str = "INFO"
 
