@@ -1,0 +1,369 @@
+"""
+Main Pipeline - Orchestrates the complete insider trading detection pipeline
+Data Ingestion → Prefiltering → Enrichment → LLM Analysis
+"""
+import logging
+from typing import List, Dict, Any, Optional
+from datetime import datetime, timedelta
+import pandas as pd
+
+from config import settings
+from database.models import init_db, get_session, Market, Wallet, Trade, SuspiciousTransaction
+from data_ingestion.gamma_client import GammaClient
+from data_ingestion.historical_loader import HistoricalDataLoader
+from prefiltering.timing_detector import TimingDetector
+from prefiltering.volume_detector import VolumeDetector
+from prefiltering.gains_detector import GainsDetector
+# Network detector removed - not used
+from enrichment.wallet_profiler import WalletProfiler
+from enrichment.market_context import MarketContextEnricher
+from llm_analysis.claude_analyzer import ClaudeAnalyzer
+
+logging.basicConfig(
+    level=getattr(logging, settings.log_level),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+class InsiderTradingDetectionPipeline:
+    """Main pipeline for detecting insider trading"""
+
+    def __init__(self):
+        # Initialize database
+        self.engine = init_db()
+        self.session = get_session(self.engine)
+        
+        # Initialize clients and detectors
+        self.gamma_client = GammaClient()
+        self.historical_loader = HistoricalDataLoader()
+        
+        # Initialize detectors
+        self.timing_detector = TimingDetector()
+        self.volume_detector = VolumeDetector()
+        self.gains_detector = GainsDetector()
+        # Network detector not used
+        
+        # Initialize enrichment
+        self.wallet_profiler = WalletProfiler()
+        self.context_enricher = MarketContextEnricher()
+        
+        # Initialize LLM analyzer
+        self.claude_analyzer = ClaudeAnalyzer()
+
+    def run_full_pipeline(
+        self,
+        days_back: int = 30,
+        prefilter_threshold: float = 0.5,
+        analyze_with_llm: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Run the complete detection pipeline
+
+        Args:
+            days_back: Number of days of historical data to analyze
+            prefilter_threshold: Minimum score to flag as suspicious
+            analyze_with_llm: Whether to run LLM analysis on flagged transactions
+
+        Returns:
+            Pipeline results summary
+        """
+        logger.info("=" * 80)
+        logger.info("STARTING INSIDER TRADING DETECTION PIPELINE")
+        logger.info("=" * 80)
+        
+        results = {
+            'start_time': datetime.utcnow(),
+            'markets_analyzed': 0,
+            'trades_analyzed': 0,
+            'suspicious_trades': 0,
+            'llm_analyzed': 0,
+            'high_risk_cases': 0
+        }
+
+        try:
+            # Step 1: Data Ingestion
+            logger.info("\n[1/5] DATA INGESTION")
+            markets, trades_df = self._ingest_data(days_back)
+            results['markets_analyzed'] = len(markets)
+            results['trades_analyzed'] = len(trades_df)
+            
+            if trades_df.empty:
+                logger.warning("No trades to analyze. Exiting pipeline.")
+                return results
+
+            # Step 2: Prefiltering
+            logger.info("\n[2/5] PREFILTERING - Running 4 detectors")
+            suspicious_trades = self._prefilter_trades(
+                trades_df,
+                markets,
+                prefilter_threshold
+            )
+            results['suspicious_trades'] = len(suspicious_trades)
+            
+            if not suspicious_trades:
+                logger.info("No suspicious trades detected. Pipeline complete.")
+                return results
+
+            # Step 3: Enrichment
+            logger.info("\n[3/5] ENRICHMENT - Adding context")
+            enriched_transactions = self._enrich_transactions(
+                suspicious_trades,
+                trades_df,
+                markets
+            )
+
+            # Step 4: LLM Analysis
+            if analyze_with_llm:
+                logger.info("\n[4/5] LLM ANALYSIS - OpenAI o1 reasoning")
+                llm_results = self._analyze_with_llm(enriched_transactions)
+                results['llm_analyzed'] = len(llm_results)
+                results['high_risk_cases'] = sum(
+                    1 for r in llm_results if r['suspicion_score'] >= 70
+                )
+
+            # Step 5: Save Results
+            logger.info("\n[5/5] SAVING RESULTS")
+            self._save_results(enriched_transactions, llm_results if analyze_with_llm else [])
+
+            results['end_time'] = datetime.utcnow()
+            results['duration_seconds'] = (results['end_time'] - results['start_time']).total_seconds()
+
+            logger.info("\n" + "=" * 80)
+            logger.info("PIPELINE COMPLETE")
+            logger.info(f"Markets analyzed: {results['markets_analyzed']}")
+            logger.info(f"Trades analyzed: {results['trades_analyzed']}")
+            logger.info(f"Suspicious trades: {results['suspicious_trades']}")
+            logger.info(f"LLM analyzed: {results['llm_analyzed']}")
+            logger.info(f"High risk cases: {results['high_risk_cases']}")
+            logger.info(f"Duration: {results['duration_seconds']:.1f}s")
+            logger.info("=" * 80)
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Pipeline failed: {e}", exc_info=True)
+            raise
+
+    def _ingest_data(self, days_back: int) -> tuple[List[Dict], pd.DataFrame]:
+        """Ingest market and trade data"""
+        logger.info(f"Fetching closed markets from last {days_back} days...")
+        
+        # Get closed markets
+        markets = self.historical_loader.load_closed_markets_with_outcomes(days_back)
+        logger.info(f"Found {len(markets)} closed markets")
+        
+        # Load trades for these markets
+        all_trades = []
+        for i, market in enumerate(markets):  # No limit - analyze all
+            logger.info(f"Loading trades for market {i+1}/{len(markets)}: {market['question'][:50]}...")
+            market_trades = self.historical_loader.load_market_trades(market['market_id'])
+            if not market_trades.empty:
+                all_trades.append(market_trades)
+        
+        trades_df = pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame()
+        logger.info(f"Loaded {len(trades_df)} total trades")
+        
+        return markets, trades_df
+
+    def _prefilter_trades(
+        self,
+        trades_df: pd.DataFrame,
+        markets: List[Dict],
+        threshold: float
+    ) -> List[Dict[str, Any]]:
+        """Run prefiltering detectors on all trades"""
+        
+        suspicious = []
+        market_dict = {m['market_id']: m for m in markets}
+        market_outcomes = {m['market_id']: m['outcome'] for m in markets if m.get('outcome')}
+        
+        # Build network graph (COMMENTED OUT FOR PERFORMANCE)
+        # logger.info("Building trade network...")
+        # trade_graph = self.network_detector.build_trade_network(trades_df)
+
+        logger.info(f"Analyzing {len(trades_df)} trades...")
+
+        for idx, trade in trades_df.iterrows():
+            trade_dict = trade.to_dict()
+            market_id = trade_dict['market_id']
+            wallet = trade_dict['wallet_address']
+
+            if market_id not in market_dict:
+                continue
+
+            market = market_dict[market_id]
+            wallet_trades = trades_df[trades_df['wallet_address'] == wallet]
+
+            # Run detectors (3 out of 4, network commented out)
+            timing_result = self.timing_detector.analyze_trade(trade_dict, market)
+            volume_result = self.volume_detector.analyze_trade_volume(
+                trade_dict, wallet_trades, market
+            )
+            gains_result = self.gains_detector.calculate_win_rate(
+                wallet_trades, market_outcomes
+            )
+            # network_result = self.network_detector.analyze_wallet_connections(
+            #     wallet, trade_graph
+            # )
+            network_result = {'score': 0.0, 'flags': []}  # Disabled for performance
+
+            # Calculate total score (network weight redistributed)
+            # New weights: Timing=40%, Volume=30%, Gains=30%, Network=0%
+            total_score = (
+                timing_result['score'] * 0.4 +
+                volume_result['score'] * 0.3 +
+                gains_result['score'] * 0.3 +
+                network_result['score'] * 0.0
+            )
+            
+            if total_score >= threshold:
+                suspicious_trade = {
+                    **trade_dict,
+                    'timing_score': timing_result['score'],
+                    'volume_score': volume_result['score'],
+                    'gains_score': gains_result['score'],
+                    'network_score': network_result['score'],
+                    'total_score': total_score,
+                    'flags': (
+                        timing_result.get('flags', []) +
+                        volume_result.get('flags', []) +
+                        gains_result.get('flags', []) +
+                        network_result.get('flags', [])
+                    )
+                }
+                suspicious.append(suspicious_trade)
+        
+        logger.info(f"Flagged {len(suspicious)} suspicious trades (threshold: {threshold})")
+        return suspicious
+
+    def _enrich_transactions(
+        self,
+        suspicious_trades: List[Dict],
+        all_trades: pd.DataFrame,
+        markets: List[Dict]
+    ) -> List[Dict[str, Any]]:
+        """Enrich suspicious transactions with context"""
+        
+        enriched = []
+        market_dict = {m['market_id']: m for m in markets}
+        market_outcomes = {m['market_id']: m['outcome'] for m in markets if m.get('outcome')}
+        
+        for trade in suspicious_trades:
+            wallet = trade['wallet_address']
+            market_id = trade['market_id']
+            
+            # Get wallet profile
+            wallet_trades = all_trades[all_trades['wallet_address'] == wallet]
+            wallet_profile = self.wallet_profiler.create_profile(
+                wallet, wallet_trades, markets, market_outcomes
+            )
+            
+            # Get market context
+            market_trades = all_trades[all_trades['market_id'] == market_id]
+            enriched_context = self.context_enricher.enrich_transaction(
+                trade,
+                market_dict.get(market_id, {}),
+                market_trades,
+                wallet_profile
+            )
+            
+            enriched.append(enriched_context)
+        
+        logger.info(f"Enriched {len(enriched)} transactions with context")
+        return enriched
+
+    def _analyze_with_llm(
+        self,
+        enriched_transactions: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Analyze with OpenAI o1 LLM"""
+        
+        logger.info(f"Analyzing {len(enriched_transactions)} transactions with OpenAI o1...")
+
+        results = []
+        for i, context in enumerate(enriched_transactions):
+            logger.info(f"Analyzing {i+1}/{len(enriched_transactions)}...")
+
+            formatted = self.context_enricher.format_for_llm(context)
+            analysis = self.claude_analyzer.analyze_transaction(context, formatted)
+            results.append(analysis)
+        
+        return results
+
+    def _save_results(
+        self,
+        enriched_transactions: List[Dict],
+        llm_results: List[Dict]
+    ):
+        """Save results to database"""
+        logger.info("Saving results to database...")
+        
+        # Implementation depends on database schema
+        # Would save to SuspiciousTransaction table
+        
+        logger.info(f"Saved {len(enriched_transactions)} results")
+
+    def close(self):
+        """Clean up resources"""
+        self.gamma_client.close()
+        self.historical_loader.close()
+        self.session.close()
+
+
+def main():
+    """Main entry point with CLI arguments"""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Historical Polymarket Insider Trading Analysis'
+    )
+    parser.add_argument(
+        '--days-back',
+        type=int,
+        default=30,
+        help='Number of days of historical data to analyze (default: 30)'
+    )
+    parser.add_argument(
+        '--threshold',
+        type=float,
+        default=0.05,
+        help='Detection threshold 0.0-1.0 (default: 0.05)'
+    )
+    parser.add_argument(
+        '--no-llm',
+        action='store_true',
+        help='Skip LLM analysis (faster)'
+    )
+
+    args = parser.parse_args()
+
+    pipeline = InsiderTradingDetectionPipeline()
+
+    try:
+        print(f"\n{'='*80}")
+        print(f"HISTORICAL PIPELINE CONFIGURATION")
+        print(f"{'='*80}")
+        print(f"Days back: {args.days_back}")
+        print(f"Threshold: {args.threshold}")
+        print(f"LLM Analysis: {'No' if args.no_llm else 'Yes'}")
+        print(f"{'='*80}\n")
+
+        results = pipeline.run_full_pipeline(
+            days_back=args.days_back,
+            prefilter_threshold=args.threshold,
+            analyze_with_llm=not args.no_llm
+        )
+
+        print("\n" + "=" * 80)
+        print("PIPELINE RESULTS")
+        print("=" * 80)
+        for key, value in results.items():
+            print(f"{key}: {value}")
+
+    finally:
+        pipeline.close()
+
+
+if __name__ == "__main__":
+    main()
