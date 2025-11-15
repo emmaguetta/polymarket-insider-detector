@@ -41,10 +41,17 @@ class TimingDetector:
         }
 
         trade_time = pd.to_datetime(trade['timestamp'])
-        
+
         # Check if market has end_date/resolution time
         if 'end_date' in market and market['end_date']:
             end_time = pd.to_datetime(market['end_date'])
+
+            # Make timezone-aware timestamps comparable
+            if trade_time.tz is None and end_time.tz is not None:
+                trade_time = trade_time.tz_localize('UTC')
+            elif trade_time.tz is not None and end_time.tz is None:
+                end_time = end_time.tz_localize('UTC')
+
             hours_before_end = (end_time - trade_time).total_seconds() / 3600
             
             result['details']['hours_before_resolution'] = hours_before_end
