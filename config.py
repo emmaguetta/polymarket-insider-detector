@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     # Polymarket API
     gamma_api_base_url: str = "https://gamma-api.polymarket.com"
 
+    # Prefiltering Thresholds
+    timing_threshold_hours: int = 24
+    volume_anomaly_threshold: float = 2.0
+    min_trades_for_analysis: int = 5
+
     # Logging
     log_level: str = "INFO"
 

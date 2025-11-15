@@ -1,0 +1,1 @@
+"""Prefiltering detectors package"""
