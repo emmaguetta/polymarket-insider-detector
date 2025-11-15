@@ -128,14 +128,34 @@ class MarketContextEnricher:
         # Market creation to suspicious trade
         if 'created_date' in market_data:
             created = pd.to_datetime(market_data['created_date'])
+
+            # Handle timezone differences
+            if trade_time.tz is None and created.tz is not None:
+                trade_time_local = trade_time.tz_localize('UTC')
+            elif trade_time.tz is not None and created.tz is None:
+                created = created.tz_localize('UTC')
+                trade_time_local = trade_time
+            else:
+                trade_time_local = trade_time
+
             timeline['market_created'] = created.isoformat()
-            timeline['days_market_active_before_trade'] = (trade_time - created).days
+            timeline['days_market_active_before_trade'] = (trade_time_local - created).days
 
         # Suspicious trade to resolution
         if 'end_date' in market_data and market_data['end_date']:
             end_date = pd.to_datetime(market_data['end_date'])
+
+            # Handle timezone differences
+            if trade_time.tz is None and end_date.tz is not None:
+                trade_time_local = trade_time.tz_localize('UTC')
+            elif trade_time.tz is not None and end_date.tz is None:
+                end_date = end_date.tz_localize('UTC')
+                trade_time_local = trade_time
+            else:
+                trade_time_local = trade_time
+
             timeline['market_resolution'] = end_date.isoformat()
-            timeline['hours_before_resolution'] = (end_date - trade_time).total_seconds() / 3600
+            timeline['hours_before_resolution'] = (end_date - trade_time_local).total_seconds() / 3600
 
         # Trading activity timeline around suspicious trade
         window_hours = 24
