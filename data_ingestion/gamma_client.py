@@ -70,30 +70,55 @@ class GammaClient:
             logger.error(f"Error fetching markets: {e}")
             raise
 
-    def get_market_by_id(self, market_id: str) -> Optional[Dict[str, Any]]:
+    def get_market_by_condition_id(self, condition_id: str) -> Optional[Dict[str, Any]]:
         """
-        Fetch a specific market by ID
+        Fetch a specific market by condition ID
 
         Args:
-            market_id: The market condition ID
+            condition_id: The market condition ID (0x...)
 
         Returns:
             Market dictionary or None if not found
         """
         try:
             response = self.session.get(
-                f"{self.base_url}/markets/{market_id}",
+                f"{self.base_url}/markets",
+                params={"conditionId": condition_id},
                 timeout=30
             )
             response.raise_for_status()
             data = response.json()
-            
-            logger.info(f"Fetched market {market_id}")
-            return data
-            
+
+            if data and len(data) > 0:
+                logger.info(f"Fetched market {condition_id}")
+                return data[0]  # Return first match
+            else:
+                logger.warning(f"No market found for condition ID {condition_id}")
+                return None
+
         except requests.RequestException as e:
-            logger.error(f"Error fetching market {market_id}: {e}")
+            logger.error(f"Error fetching market {condition_id}: {e}")
             return None
+
+    def get_markets_by_condition_ids(self, condition_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Fetch multiple markets by their condition IDs
+
+        Args:
+            condition_ids: List of condition IDs
+
+        Returns:
+            Dictionary mapping condition_id -> market data
+        """
+        markets_dict = {}
+
+        for condition_id in condition_ids:
+            market = self.get_market_by_condition_id(condition_id)
+            if market:
+                markets_dict[condition_id] = market
+
+        logger.info(f"Fetched {len(markets_dict)}/{len(condition_ids)} markets")
+        return markets_dict
 
     def get_events(
         self,

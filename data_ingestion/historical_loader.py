@@ -129,19 +129,21 @@ class HistoricalDataLoader:
         days_back: int = 30
     ) -> List[Dict[str, Any]]:
         """
-        Load markets with recent trading activity
+        Load markets with recent trading activity and full metadata from Gamma API
 
-        Strategy: Fetch recent trades from Data API, extract unique markets,
-        then get market details from Gamma API
+        Strategy:
+        1. Fetch recent trades from Data API to find active markets
+        2. Get full market metadata from Gamma API (endDate, category, outcomes, etc.)
 
         Args:
             days_back: Number of days to look back (used for filtering trades)
 
         Returns:
-            List of markets with recent trades
+            List of markets with complete metadata
         """
         try:
             import requests
+            import json
 
             # Fetch recent trades to find active markets (no auth needed!)
             logger.info("Fetching recent trades to identify active markets...")
@@ -158,41 +160,85 @@ class HistoricalDataLoader:
             recent_trades = trades_resp.json()
 
             # Extract unique condition IDs
-            condition_ids = set()
-            for trade in recent_trades:
-                cond_id = trade.get('conditionId')
-                if cond_id:
-                    condition_ids.add(cond_id)
+            condition_ids = list(set(
+                trade.get('conditionId') for trade in recent_trades
+                if trade.get('conditionId')
+            ))
 
             logger.info(f"Found {len(condition_ids)} unique markets with recent trades")
 
-            # Build market metadata from trades themselves (no need for Gamma API!)
-            markets_with_trades = []
-            markets_dict = {}
+            # Fetch full market metadata from Gamma API
+            logger.info("Fetching market metadata from Gamma API...")
+            markets_with_metadata = []
 
-            # Extract market info from trades
-            for trade in recent_trades:
-                cond_id = trade.get('conditionId')
-                if cond_id and cond_id not in markets_dict:
-                    markets_dict[cond_id] = {
-                        'market_id': cond_id,
-                        'question': trade.get('title'),
-                        'slug': trade.get('slug'),
-                        'event_slug': trade.get('eventSlug'),
-                        'end_date': None,  # Not available in trades
-                        'outcome': None,  # Active markets don't have outcomes yet
-                        'volume': 0,  # Would need to calculate from trades
-                        'category': None  # Not in trade data
+            # Limit to 20 markets to avoid too many API calls
+            for condition_id in condition_ids[:20]:
+                market_data = self.gamma_client.get_market_by_condition_id(condition_id)
+
+                if market_data:
+                    # Parse and enrich market data
+                    enriched_market = {
+                        'market_id': condition_id,
+                        'question': market_data.get('question'),
+                        'description': market_data.get('description'),
+                        'category': market_data.get('category'),
+                        'end_date': market_data.get('endDate'),
+                        'closed': market_data.get('closed', False),
+                        'outcome': self._infer_outcome_from_prices(market_data),
+                        'volume': float(market_data.get('volumeNum', 0)),
+                        'outcomes': market_data.get('outcomes'),
+                        'outcome_prices': market_data.get('outcomePrices'),
+                        'slug': market_data.get('slug'),
+                        'created_at': market_data.get('createdAt')
                     }
+                    markets_with_metadata.append(enriched_market)
 
-            markets_with_trades = list(markets_dict.values())[:20]  # Limit to 20
-
-            logger.info(f"Loaded {len(markets_with_trades)} markets with trade data")
-            return markets_with_trades
+            logger.info(f"Loaded {len(markets_with_metadata)} markets with full metadata")
+            return markets_with_metadata
 
         except Exception as e:
-            logger.error(f"Error loading markets with trades: {e}")
+            logger.error(f"Error loading markets with metadata: {e}")
             return []
+
+    def _infer_outcome_from_prices(self, market: Dict[str, Any]) -> Optional[str]:
+        """
+        Infer the winning outcome from outcomePrices
+        If a price is >= 0.9, that outcome likely won
+
+        Args:
+            market: Market data from Gamma API
+
+        Returns:
+            Winning outcome string or None if not resolved
+        """
+        try:
+            import json
+
+            # Get outcomes and prices
+            outcomes_str = market.get('outcomes')
+            prices_str = market.get('outcomePrices')
+
+            if not outcomes_str or not prices_str:
+                return None
+
+            # Parse JSON strings if needed
+            outcomes = json.loads(outcomes_str) if isinstance(outcomes_str, str) else outcomes_str
+            prices = json.loads(prices_str) if isinstance(prices_str, str) else prices_str
+
+            if not outcomes or not prices or len(outcomes) != len(prices):
+                return None
+
+            # Find the outcome with price >= 0.9 (winner)
+            for i, price in enumerate(prices):
+                price_float = float(price)
+                if price_float >= 0.9:  # Threshold for resolved market
+                    return outcomes[i]
+
+            return None  # No clear winner
+
+        except Exception as e:
+            logger.warning(f"Error inferring outcome: {e}")
+            return None
 
     def aggregate_wallet_statistics(
         self,
@@ -238,48 +284,6 @@ class HistoricalDataLoader:
 
         return stats
 
-    def _infer_outcome(self, market: Dict[str, Any]) -> Optional[str]:
-        """
-        Infer the winning outcome from outcomePrices
-
-        Args:
-            market: Market data from Gamma API
-
-        Returns:
-            Winning outcome string or None if not resolved
-        """
-        try:
-            import json
-
-            # Get outcomes and prices
-            outcomes_str = market.get('outcomes')
-            prices_str = market.get('outcomePrices')
-
-            if not outcomes_str or not prices_str:
-                return None
-
-            # Parse JSON strings
-            outcomes = json.loads(outcomes_str) if isinstance(outcomes_str, str) else outcomes_str
-            prices = json.loads(prices_str) if isinstance(prices_str, str) else prices_str
-
-            if not outcomes or not prices or len(outcomes) != len(prices):
-                return None
-
-            # Find the outcome with price closest to 1.0 (winner)
-            max_price = 0.0
-            winning_outcome = None
-
-            for i, price in enumerate(prices):
-                price_float = float(price)
-                if price_float > max_price and price_float > 0.9:  # Must be > 0.9 to be considered resolved
-                    max_price = price_float
-                    winning_outcome = outcomes[i]
-
-            return winning_outcome
-
-        except Exception as e:
-            logger.warning(f"Error inferring outcome for market: {e}")
-            return None
 
     def _extract_token_ids(self, market: Dict[str, Any]) -> List[str]:
         """Extract token IDs from market data"""

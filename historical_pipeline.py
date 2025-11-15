@@ -298,10 +298,12 @@ class InsiderTradingDetectionPipeline:
         return results
 
     def _save_markets(self, markets: List[Dict]):
-        """Save markets to database"""
+        """Save markets to database with full metadata"""
         logger.info(f"Saving {len(markets)} markets to database...")
 
         saved_count = 0
+        updated_count = 0
+
         for market_data in markets:
             try:
                 # Check if market already exists
@@ -309,25 +311,35 @@ class InsiderTradingDetectionPipeline:
                     id=market_data['market_id']
                 ).first()
 
-                if not existing:
+                if existing:
+                    # Update existing market with new data
+                    if market_data.get('outcome'):
+                        existing.outcome = market_data['outcome']
+                        existing.resolved = True
+                    if market_data.get('volume'):
+                        existing.volume = market_data['volume']
+                    updated_count += 1
+                else:
+                    # Create new market
                     market = Market(
                         id=market_data['market_id'],
                         question=market_data.get('question', 'Unknown'),
                         description=market_data.get('description', ''),
                         category=market_data.get('category'),
                         end_date=pd.to_datetime(market_data['end_date']) if market_data.get('end_date') else None,
-                        resolved=market_data.get('outcome') is not None,
+                        resolved=market_data.get('closed', False) and market_data.get('outcome') is not None,
                         outcome=market_data.get('outcome'),
-                        volume=market_data.get('volume', 0)
+                        volume=float(market_data.get('volume', 0))
                     )
                     self.session.add(market)
                     saved_count += 1
+
             except Exception as e:
                 logger.warning(f"Error saving market {market_data.get('market_id')}: {e}")
                 continue
 
         self.session.commit()
-        logger.info(f"Saved {saved_count} new markets to database")
+        logger.info(f"Saved {saved_count} new markets, updated {updated_count} existing markets")
 
     def _save_trades(self, trades_df: pd.DataFrame):
         """Save trades and wallets to database"""
@@ -389,6 +401,44 @@ class InsiderTradingDetectionPipeline:
 
         self.session.commit()
         logger.info(f"Saved {saved_trades} new trades to database")
+
+        # Update wallet statistics
+        self._update_wallet_statistics(trades_df)
+
+    def _update_wallet_statistics(self, trades_df: pd.DataFrame):
+        """Update wallet statistics based on trades"""
+        if trades_df.empty:
+            return
+
+        logger.info("Updating wallet statistics...")
+
+        unique_wallets = trades_df['wallet_address'].unique()
+        updated_count = 0
+
+        for wallet_addr in unique_wallets:
+            try:
+                wallet = self.session.query(Wallet).filter_by(address=wallet_addr).first()
+                if not wallet:
+                    continue
+
+                # Get all trades for this wallet
+                wallet_trades = trades_df[trades_df['wallet_address'] == wallet_addr]
+
+                # Update statistics
+                wallet.total_trades = len(wallet_trades)
+                wallet.total_volume = float(wallet_trades['size'].sum() if 'size' in wallet_trades.columns else 0)
+                wallet.first_seen = wallet_trades['timestamp'].min()
+                wallet.last_seen = wallet_trades['timestamp'].max()
+                wallet.unique_markets = wallet_trades['market_id'].nunique() if 'market_id' in wallet_trades.columns else 0
+
+                updated_count += 1
+
+            except Exception as e:
+                logger.warning(f"Error updating wallet {wallet_addr}: {e}")
+                continue
+
+        self.session.commit()
+        logger.info(f"Updated statistics for {updated_count} wallets")
 
     def _save_results(
         self,
