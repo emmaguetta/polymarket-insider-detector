@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite:///polymarket_insider.db"
 
+    # Polymarket API
+    gamma_api_base_url: str = "https://gamma-api.polymarket.com"
+
     # Logging
     log_level: str = "INFO"
 

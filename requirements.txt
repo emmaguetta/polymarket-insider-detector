@@ -5,3 +5,13 @@ pydantic-settings==2.1.0
 
 # Database
 sqlalchemy==2.0.25
+
+# Data Processing
+pandas==2.2.0
+numpy==1.26.3
+requests==2.31.0
+httpx==0.26.0
+python-dateutil==2.8.2
+
+# Polymarket Client
+py-clob-client==0.28.0
