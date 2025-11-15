@@ -148,11 +148,14 @@ class InsiderTradingDetectionPipeline:
     def _ingest_data(self, days_back: int) -> tuple[List[Dict], pd.DataFrame]:
         """Ingest market and trade data"""
         logger.info(f"Fetching closed markets from last {days_back} days...")
-        
+
         # Get closed markets
         markets = self.historical_loader.load_closed_markets_with_outcomes(days_back)
         logger.info(f"Found {len(markets)} closed markets")
-        
+
+        # Save markets to database
+        self._save_markets(markets)
+
         # Load trades for these markets
         all_trades = []
         for i, market in enumerate(markets):  # No limit - analyze all
@@ -160,10 +163,13 @@ class InsiderTradingDetectionPipeline:
             market_trades = self.historical_loader.load_market_trades(market['market_id'])
             if not market_trades.empty:
                 all_trades.append(market_trades)
-        
+
         trades_df = pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame()
         logger.info(f"Loaded {len(trades_df)} total trades")
-        
+
+        # Save trades and wallets to database
+        self._save_trades(trades_df)
+
         return markets, trades_df
 
     def _prefilter_trades(
@@ -291,18 +297,150 @@ class InsiderTradingDetectionPipeline:
         
         return results
 
+    def _save_markets(self, markets: List[Dict]):
+        """Save markets to database"""
+        logger.info(f"Saving {len(markets)} markets to database...")
+
+        saved_count = 0
+        for market_data in markets:
+            try:
+                # Check if market already exists
+                existing = self.session.query(Market).filter_by(
+                    id=market_data['market_id']
+                ).first()
+
+                if not existing:
+                    market = Market(
+                        id=market_data['market_id'],
+                        question=market_data.get('question', 'Unknown'),
+                        description=market_data.get('description', ''),
+                        category=market_data.get('category'),
+                        end_date=pd.to_datetime(market_data['end_date']) if market_data.get('end_date') else None,
+                        resolved=market_data.get('outcome') is not None,
+                        outcome=market_data.get('outcome'),
+                        volume=market_data.get('volume', 0)
+                    )
+                    self.session.add(market)
+                    saved_count += 1
+            except Exception as e:
+                logger.warning(f"Error saving market {market_data.get('market_id')}: {e}")
+                continue
+
+        self.session.commit()
+        logger.info(f"Saved {saved_count} new markets to database")
+
+    def _save_trades(self, trades_df: pd.DataFrame):
+        """Save trades and wallets to database"""
+        if trades_df.empty:
+            return
+
+        logger.info(f"Saving {len(trades_df)} trades to database...")
+
+        # First, save unique wallets
+        unique_wallets = trades_df['wallet_address'].unique()
+        saved_wallets = 0
+
+        for wallet_addr in unique_wallets:
+            try:
+                existing = self.session.query(Wallet).filter_by(
+                    address=wallet_addr
+                ).first()
+
+                if not existing:
+                    wallet = Wallet(address=wallet_addr)
+                    self.session.add(wallet)
+                    saved_wallets += 1
+            except Exception as e:
+                logger.warning(f"Error saving wallet {wallet_addr}: {e}")
+                continue
+
+        self.session.commit()
+        logger.info(f"Saved {saved_wallets} new wallets")
+
+        # Now save trades
+        saved_trades = 0
+        for _, trade_row in trades_df.iterrows():
+            try:
+                # Check if trade already exists
+                existing = self.session.query(Trade).filter_by(
+                    transaction_hash=trade_row.get('transaction_hash')
+                ).first()
+
+                if not existing and trade_row.get('transaction_hash'):
+                    trade = Trade(
+                        transaction_hash=trade_row['transaction_hash'],
+                        market_id=trade_row['market_id'],
+                        wallet_address=trade_row['wallet_address'],
+                        timestamp=trade_row['timestamp'],
+                        size=float(trade_row.get('size', 0)),
+                        price=float(trade_row.get('price', 0)),
+                        outcome=trade_row.get('outcome'),
+                        side=trade_row.get('side')
+                    )
+                    self.session.add(trade)
+                    saved_trades += 1
+            except Exception as e:
+                logger.warning(f"Error saving trade: {e}")
+                continue
+
+        self.session.commit()
+        logger.info(f"Saved {saved_trades} new trades to database")
+
     def _save_results(
         self,
         enriched_transactions: List[Dict],
         llm_results: List[Dict]
     ):
-        """Save results to database"""
-        logger.info("Saving results to database...")
-        
-        # Implementation depends on database schema
-        # Would save to SuspiciousTransaction table
-        
-        logger.info(f"Saved {len(enriched_transactions)} results")
+        """Save suspicious transactions with LLM analysis to database"""
+        logger.info(f"Saving {len(enriched_transactions)} suspicious transactions to database...")
+
+        saved_count = 0
+        for i, enriched in enumerate(enriched_transactions):
+            try:
+                transaction = enriched['transaction']
+                tx_hash = transaction.get('transaction_hash')
+
+                if not tx_hash:
+                    logger.warning("Skipping transaction without hash")
+                    continue
+
+                # Check if already exists
+                existing = self.session.query(SuspiciousTransaction).filter_by(
+                    transaction_hash=tx_hash
+                ).first()
+
+                if existing:
+                    continue
+
+                # Get LLM analysis if available
+                llm_analysis = llm_results[i] if i < len(llm_results) else {}
+
+                suspicious_tx = SuspiciousTransaction(
+                    transaction_hash=tx_hash,
+                    market_id=transaction['market_id'],
+                    wallet_address=transaction['wallet_address'],
+                    timestamp=transaction['timestamp'],
+                    detection_score=enriched['anomalies']['detection_scores']['total_score'],
+                    timing_score=enriched['anomalies']['detection_scores']['timing_score'],
+                    volume_score=enriched['anomalies']['detection_scores']['volume_score'],
+                    gains_score=enriched['anomalies']['detection_scores']['gains_score'],
+                    network_score=enriched['anomalies']['detection_scores']['network_score'],
+                    flags=','.join(enriched['anomalies']['flags']),
+                    llm_suspicion_score=llm_analysis.get('suspicion_score', 0),
+                    llm_confidence=llm_analysis.get('confidence', 'unknown'),
+                    llm_reasoning=llm_analysis.get('reasoning', ''),
+                    llm_recommendation=llm_analysis.get('recommendation', 'manual_review')
+                )
+
+                self.session.add(suspicious_tx)
+                saved_count += 1
+
+            except Exception as e:
+                logger.error(f"Error saving suspicious transaction: {e}")
+                continue
+
+        self.session.commit()
+        logger.info(f"Saved {saved_count} suspicious transactions to database")
 
     def close(self):
         """Clean up resources"""
