@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     # Prefiltering Thresholds
     timing_threshold_hours: int = 24
     volume_anomaly_threshold: float = 2.0
+    win_rate_threshold: float = 0.75
     min_trades_for_analysis: int = 5
 
     # Logging
