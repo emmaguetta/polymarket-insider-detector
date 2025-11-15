@@ -10,26 +10,11 @@ class Settings(BaseSettings):
     # Anthropic API
     anthropic_api_key: str
 
-    # Database (SQLite only)
+    # Database
     database_url: str = "sqlite:///polymarket_insider.db"
-
-    # Polymarket API
-    gamma_api_base_url: str = "https://gamma-api.polymarket.com"
-
-    # Prefiltering Thresholds
-    timing_threshold_hours: int = 24
-    volume_anomaly_threshold: float = 2.0
-    win_rate_threshold: float = 0.75
-    min_trades_for_analysis: int = 5
-
-    # LLM Configuration
-    anthropic_model: str = "claude-haiku-4-5"
-    max_tokens: int = 4096
-    temperature: float = 1.0
 
     # Logging
     log_level: str = "INFO"
-    log_file: str = "logs/insider_detector.log"
 
     class Config:
         env_file = ".env"
