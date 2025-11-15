@@ -21,21 +21,12 @@ class HistoricalDataLoader:
 
         self.gamma_client = GammaClient()
 
-        # Initialize CLOB client for historical trade data
-        # Use private key if available for authenticated requests
-        if settings.polymarket_private_key:
-            logger.info("Initializing authenticated CLOB client")
-            self.clob_client = ClobClient(
-                host="https://clob.polymarket.com",
-                key=settings.polymarket_private_key,
-                chain_id=POLYGON
-            )
-        else:
-            logger.warning("No private key found, using unauthenticated CLOB client")
-            self.clob_client = ClobClient(
-                host="https://clob.polymarket.com",
-                chain_id=POLYGON
-            )
+        # Initialize CLOB client (unauthenticated - no private key needed)
+        logger.info("Initializing CLOB client (public access)")
+        self.clob_client = ClobClient(
+            host="https://clob.polymarket.com",
+            chain_id=POLYGON
+        )
 
     def load_market_trades(
         self,
