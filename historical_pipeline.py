@@ -426,6 +426,23 @@ class InsiderTradingDetectionPipeline:
                 # Get LLM analysis if available
                 llm_analysis = llm_results[i] if i < len(llm_results) else {}
 
+                # Convert pandas Timestamps to ISO strings for JSON serialization
+                import json
+                def serialize_for_json(obj):
+                    """Convert pandas Timestamps and other non-JSON types"""
+                    if pd.isna(obj):
+                        return None
+                    elif hasattr(obj, 'isoformat'):  # datetime/Timestamp
+                        return obj.isoformat()
+                    elif isinstance(obj, dict):
+                        return {k: serialize_for_json(v) for k, v in obj.items()}
+                    elif isinstance(obj, list):
+                        return [serialize_for_json(v) for v in obj]
+                    else:
+                        return obj
+
+                serialized_context = serialize_for_json(enriched)
+
                 suspicious_tx = SuspiciousTransaction(
                     trade_id=trade_id,
                     market_id=market_id,
@@ -439,7 +456,7 @@ class InsiderTradingDetectionPipeline:
                     llm_analyzed=bool(llm_analysis),
                     llm_suspicion_score=llm_analysis.get('suspicion_score', 0) if llm_analysis else None,
                     llm_reasoning=llm_analysis.get('reasoning', '') if llm_analysis else None,
-                    context=enriched  # Store full enriched context as JSON
+                    context=serialized_context  # Store serialized context as JSON
                 )
 
                 self.session.add(suspicious_tx)
