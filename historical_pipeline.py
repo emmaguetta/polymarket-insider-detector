@@ -493,18 +493,23 @@ class InsiderTradingDetectionPipeline:
 
                 serialized_context = serialize_for_json(enriched)
 
+                # Ensure flags is a plain Python list
+                flags = enriched['anomalies']['flags']
+                if not isinstance(flags, list):
+                    flags = list(flags) if hasattr(flags, '__iter__') else [str(flags)]
+
                 suspicious_tx = SuspiciousTransaction(
                     trade_id=trade_id,
                     market_id=market_id,
                     wallet_address=wallet_address,
-                    timing_score=enriched['anomalies']['detection_scores']['timing_score'],
-                    volume_score=enriched['anomalies']['detection_scores']['volume_score'],
-                    gains_score=enriched['anomalies']['detection_scores']['gains_score'],
-                    network_score=enriched['anomalies']['detection_scores']['network_score'],
-                    total_score=enriched['anomalies']['detection_scores']['total_score'],
-                    flags=enriched['anomalies']['flags'],  # JSON field
-                    llm_analyzed=bool(llm_analysis),
-                    llm_suspicion_score=llm_analysis.get('suspicion_score', 0) if llm_analysis else None,
+                    timing_score=float(enriched['anomalies']['detection_scores']['timing_score']),
+                    volume_score=float(enriched['anomalies']['detection_scores']['volume_score']),
+                    gains_score=float(enriched['anomalies']['detection_scores']['gains_score']),
+                    network_score=float(enriched['anomalies']['detection_scores']['network_score']),
+                    total_score=float(enriched['anomalies']['detection_scores']['total_score']),
+                    flags=flags,  # JSON field - ensure it's a plain list
+                    llm_analyzed=bool(llm_analysis) if llm_analysis else False,
+                    llm_suspicion_score=float(llm_analysis.get('suspicion_score', 0)) if llm_analysis else None,
                     llm_reasoning=llm_analysis.get('reasoning', '') if llm_analysis else None,
                     context=serialized_context  # Store serialized context as JSON
                 )
