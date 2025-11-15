@@ -88,6 +88,29 @@ Key indicators of insider trading:
 - Trades on unlikely outcomes that later resolve favorably
 - Suspicious timing patterns (trades just before resolution)
 
+## MARKET SUSCEPTIBILITY TO INSIDER TRADING
+
+**High-Risk Markets** (more susceptible to insider information):
+- Celebrity/influencer personal decisions (e.g., "Will Elon Musk be Time Person of the Year?")
+- Company announcements, product launches, earnings reports
+- Political appointments, cabinet positions, party decisions
+- Entertainment industry decisions (awards, casting, show renewals)
+- Private business deals, acquisitions, partnerships
+- Regulatory decisions, policy announcements
+
+**Medium-Risk Markets**:
+- Election outcomes (polling vs insider knowledge)
+- Sports events with injury/lineup information
+- Legal proceedings with confidential information
+
+**Lower-Risk Markets** (harder to have exclusive insider info):
+- Public price predictions (Bitcoin, stocks) - information is widely available
+- Aggregate outcomes based on public data (unemployment rates, GDP)
+- Weather predictions, natural phenomena
+- Markets with transparent, real-time data
+
+**Consider**: Markets involving private decisions by specific individuals or small groups are MORE susceptible to insider trading than markets based on public data or collective outcomes.
+
 ## TRANSACTION TO ANALYZE
 
 {formatted_context}
@@ -96,17 +119,18 @@ Key indicators of insider trading:
 
 Analyze this transaction considering:
 
-1. **Timing Analysis**: How close is the trade to market resolution? Is it suspiciously timed?
-2. **Wallet Behavior**: Is this a new wallet? What's the trading history? Win rate?
-3. **Trade Characteristics**: Is the trade size unusual? Is it on an unlikely outcome?
-4. **Context**: What information might have been available to insiders at the time?
+1. **Market Susceptibility**: How susceptible is this market type to insider trading? Does it involve private decisions or public information?
+2. **Timing Analysis**: How close is the trade to market resolution? Is it suspiciously timed?
+3. **Wallet Behavior**: Is this a new wallet? What's the trading history? Win rate?
+4. **Trade Characteristics**: Is the trade size unusual? Is it on an unlikely outcome?
+5. **Context**: What information might have been available to insiders at the time?
 
 Provide your analysis in the following format:
 
 **SUSPICION SCORE**: [0-100]
 **CONFIDENCE**: [low/medium/high]
 **PRIMARY REASONING**:
-[Your main reasoning for the score - 2-3 sentences]
+[Your main reasoning for the score - 2-3 sentences, including market susceptibility assessment]
 
 **KEY FACTORS**:
 - [Factor 1]
@@ -116,7 +140,7 @@ Provide your analysis in the following format:
 **RECOMMENDATION**: [legitimate/suspicious/highly_suspicious/manual_review]
 
 **DETAILED ANALYSIS**:
-[Comprehensive analysis with your reasoning process]
+[Comprehensive analysis with your reasoning process, explicitly addressing market type]
 """
 
         return prompt
