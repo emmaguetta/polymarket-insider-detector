@@ -361,14 +361,18 @@ class InsiderTradingDetectionPipeline:
         saved_trades = 0
         for _, trade_row in trades_df.iterrows():
             try:
-                # Check if trade already exists
-                existing = self.session.query(Trade).filter_by(
-                    transaction_hash=trade_row.get('transaction_hash')
-                ).first()
+                tx_hash = trade_row.get('transaction_hash')
 
-                if not existing and trade_row.get('transaction_hash'):
+                # Check if trade already exists (by tx_hash)
+                existing = None
+                if tx_hash:
+                    existing = self.session.query(Trade).filter_by(
+                        tx_hash=tx_hash
+                    ).first()
+
+                if not existing:
                     trade = Trade(
-                        transaction_hash=trade_row['transaction_hash'],
+                        tx_hash=tx_hash,
                         market_id=trade_row['market_id'],
                         wallet_address=trade_row['wallet_address'],
                         timestamp=trade_row['timestamp'],
@@ -399,15 +403,22 @@ class InsiderTradingDetectionPipeline:
             try:
                 transaction = enriched['transaction']
                 tx_hash = transaction.get('transaction_hash')
+                market_id = transaction['market_id']
+                wallet_address = transaction['wallet_address']
 
-                if not tx_hash:
-                    logger.warning("Skipping transaction without hash")
-                    continue
+                # Find the corresponding trade_id from database
+                trade_id = None
+                if tx_hash:
+                    trade = self.session.query(Trade).filter_by(tx_hash=tx_hash).first()
+                    if trade:
+                        trade_id = trade.id
 
-                # Check if already exists
-                existing = self.session.query(SuspiciousTransaction).filter_by(
-                    transaction_hash=tx_hash
-                ).first()
+                # Check if suspicious transaction already exists
+                existing = None
+                if trade_id:
+                    existing = self.session.query(SuspiciousTransaction).filter_by(
+                        trade_id=trade_id
+                    ).first()
 
                 if existing:
                     continue
@@ -416,20 +427,19 @@ class InsiderTradingDetectionPipeline:
                 llm_analysis = llm_results[i] if i < len(llm_results) else {}
 
                 suspicious_tx = SuspiciousTransaction(
-                    transaction_hash=tx_hash,
-                    market_id=transaction['market_id'],
-                    wallet_address=transaction['wallet_address'],
-                    timestamp=transaction['timestamp'],
-                    detection_score=enriched['anomalies']['detection_scores']['total_score'],
+                    trade_id=trade_id,
+                    market_id=market_id,
+                    wallet_address=wallet_address,
                     timing_score=enriched['anomalies']['detection_scores']['timing_score'],
                     volume_score=enriched['anomalies']['detection_scores']['volume_score'],
                     gains_score=enriched['anomalies']['detection_scores']['gains_score'],
                     network_score=enriched['anomalies']['detection_scores']['network_score'],
-                    flags=','.join(enriched['anomalies']['flags']),
-                    llm_suspicion_score=llm_analysis.get('suspicion_score', 0),
-                    llm_confidence=llm_analysis.get('confidence', 'unknown'),
-                    llm_reasoning=llm_analysis.get('reasoning', ''),
-                    llm_recommendation=llm_analysis.get('recommendation', 'manual_review')
+                    total_score=enriched['anomalies']['detection_scores']['total_score'],
+                    flags=enriched['anomalies']['flags'],  # JSON field
+                    llm_analyzed=bool(llm_analysis),
+                    llm_suspicion_score=llm_analysis.get('suspicion_score', 0) if llm_analysis else None,
+                    llm_reasoning=llm_analysis.get('reasoning', '') if llm_analysis else None,
+                    context=enriched  # Store full enriched context as JSON
                 )
 
                 self.session.add(suspicious_tx)
